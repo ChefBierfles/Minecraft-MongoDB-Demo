@@ -1,0 +1,4 @@
+name: MongoDB
+version: '${project.version}'
+main: com.chefbierfles.mongodb.MongoDB
+api-version: 1.18.2
