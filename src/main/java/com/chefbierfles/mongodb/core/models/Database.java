@@ -1,11 +1,9 @@
 package com.chefbierfles.mongodb.core.models;
 
+import com.chefbierfles.mongodb.core.annotations.DatabaseEntity;
 import com.chefbierfles.mongodb.typeadapters.ItemStackAdapter;
 import com.chefbierfles.mongodb.typeadapters.LocationAdapter;
 import com.chefbierfles.mongodb.typeadapters.UUIDAdapter;
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.mongodb.ConnectionString;
@@ -49,6 +47,7 @@ public class Database {
             .create();
 
     private final Map<Class<? extends MongoObject>, MongoCollection<Document>> registeredCollections = new HashMap<>();
+    private final Set<CacheManager> cacheManagers = new HashSet<>();
 
     public Database(String databaseName) {
         initMongoDatabase(databaseName);
@@ -63,53 +62,39 @@ public class Database {
                 .applyConnectionString(connectionString).build();
         val mongoClient = MongoClients.create(mongoClientSettings);
         database = mongoClient.getDatabase(databaseName);
-        registerCollections();
-    }
 
-    private void registerCollections() {
         val reflections = new Reflections("com.unchainedproject.unchained");
-        Bukkit.getLogger().log(Level.INFO, "Registering database collections");
-        reflections.getSubTypesOf(MongoObject.class).stream().filter(clazz -> clazz.isAnnotationPresent(com.chefbierfles.mongodb.core.annotations.MongoCollection.class)).forEach((clazz) -> {
-            val collectionName = clazz.getAnnotation(com.chefbierfles.mongodb.core.annotations.MongoCollection.class).collectionName();
-            Bukkit.getLogger().log(Level.INFO, String.format("Collection with name %s found for MongoObject %s", collectionName, clazz.getSimpleName()));
-            registeredCollections.putIfAbsent(clazz, database.getCollection(collectionName));
+
+        reflections.getSubTypesOf(MongoObject.class).stream().filter(clazz -> clazz.isAnnotationPresent(DatabaseEntity.class)).forEach((clazz) -> {
+            val annotation = clazz.getAnnotation(DatabaseEntity.class);
+            val collectionName = annotation.collectionName();
+            if (annotation.useCache()) registerCacheManager(clazz);
+            Bukkit.getLogger().log(Level.INFO, "Registering database collections");
+            registerCollection(clazz, collectionName);
         });
     }
 
-    @Nullable
-    public <C extends MongoObject<?>, K> C getAsync(Class<C> clazz, String fieldName, K value) {
-        C result;
-        try {
-            result = CompletableFuture.supplyAsync(() -> get(clazz, fieldName, value)).get();
-        } catch (ExecutionException | InterruptedException exc) {
-            exc.printStackTrace();
-            return null;
-        }
-        return result;
+    private void registerCacheManager(Class<? extends MongoObject> clazz) {
+        cacheManagers.add(new CacheManager(clazz, this));
+    }
+
+    private void registerCollection(Class<? extends MongoObject> clazz, String collectionName) {
+        Bukkit.getLogger().log(Level.INFO, String.format("Collection with name %s found for MongoObject %s", collectionName, clazz.getSimpleName()));
+        registeredCollections.putIfAbsent(clazz, database.getCollection(collectionName));
+    }
+
+    public <C extends MongoObject<?>, K> CompletableFuture<C> getAsync(Class<C> clazz, String fieldName, K value) {
+        return CompletableFuture.supplyAsync(() -> get(clazz, fieldName, value));
     }
 
     @Nullable
-    public <C extends MongoObject<?>, K> List<C> getAllAsync(Class<C> clazz, String fieldName, K value) {
-        List<C> results;
-        try {
-            results = CompletableFuture.supplyAsync(() -> getAll(clazz, fieldName, value)).get();
-        } catch (ExecutionException | InterruptedException exc) {
-            exc.printStackTrace();
-            return null;
-        }
-        return results;
+    public <C extends MongoObject<?>, K> CompletableFuture<List<C>> getAllAsync(Class<C> clazz, String fieldName, K value) {
+        return CompletableFuture.supplyAsync(() -> getAll(clazz, fieldName, value));
     }
 
     @Nullable
-    public <C extends MongoObject<?>, K> List<C> getAllAsync(Class<C> clazz) {
-        List<C> results;
-        try {
-            results = CompletableFuture.supplyAsync(() -> getAll(clazz)).get();
-        } catch (ExecutionException | InterruptedException exc) {
-            exc.printStackTrace();
-            return null;
-        }
-        return results;
+    public <C extends MongoObject<?>, K> CompletableFuture<List<C>> getAllAsync(Class<C> clazz) {
+        return CompletableFuture.supplyAsync(() -> getAll(clazz));
     }
 
     public <O extends MongoObject<?>> void createAsync(O object) {
@@ -142,7 +127,8 @@ public class Database {
 
     @Nullable
     public <C extends MongoObject<?>, K> C get(Class<C> clazz, String fieldName, K value) {
-
+        if (clazz.getAnnotation(DatabaseEntity.class).useCache())
+            return (C) getCacheManager(clazz).getCachedObjects().getUnchecked(value);
         Object copyOfValue = value;
         if (value instanceof UUID) {
             copyOfValue = value.toString();
@@ -179,6 +165,10 @@ public class Database {
         }};
     }
 
+    private <O extends MongoObject<?>> CacheManager getCacheManager(Class<O> clazz) {
+        return cacheManagers.stream().filter(c -> c.getClassType() == clazz).findFirst().get();
+    }
+
     public <O extends MongoObject<?>> void create(Class<O> clazz, Collection<O> objects) {
         val documents = objects.stream().map(o -> Document.parse(gson.toJson(o))).collect(Collectors.toList());
         registeredCollections.get(clazz).insertMany(documents);
@@ -192,11 +182,20 @@ public class Database {
     public <O extends MongoObject<?>> void update(Class<O> clazz, Collection<O> objects) {
         val replaceModels = objects.stream().map(o -> new ReplaceOneModel<>(eq("_id", o.getId()), Document.parse(gson.toJson(o)))).collect(Collectors.toList());
         registeredCollections.get(clazz).bulkWrite(replaceModels);
+        if (clazz.getAnnotation(DatabaseEntity.class).useCache()) {
+            val cacheManager = getCacheManager(clazz);
+            objects.forEach(o -> cacheManager.getCachedObjects().refresh(o.getId()));
+        }
     }
 
     public <O extends MongoObject<?>> void update(O object) {
         val document = Document.parse(gson.toJson(object));
+        val clazz = object.getClass();
         registeredCollections.get(object.getClass()).replaceOne(eq("_id", document.get("_id")), document, new ReplaceOptions().upsert(true));
+        if (!clazz.getAnnotation(DatabaseEntity.class).useCache()) return;
+        val cachedObjects = getCacheManager(clazz).getCachedObjects();
+        if (!cachedObjects.asMap().containsKey(object.getId())) return;
+        cachedObjects.refresh(object.getId());
     }
 
     public <O extends MongoObject<?>> void save(O object) {
@@ -215,6 +214,11 @@ public class Database {
 
     public <O extends MongoObject<?>> void delete(O object) {
         val document = Document.parse(gson.toJson(object));
+        val clazz = object.getClass();
         registeredCollections.get(object.getClass()).deleteOne(eq("_id", document.get("_id")));
+        if (clazz.getAnnotation(DatabaseEntity.class).useCache()) {
+            val cacheManager = getCacheManager(clazz);
+            cacheManager.getCachedObjects().invalidate(object.getId());
+        }
     }
 }

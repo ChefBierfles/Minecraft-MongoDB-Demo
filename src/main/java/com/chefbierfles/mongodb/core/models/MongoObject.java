@@ -6,7 +6,7 @@ import lombok.Getter;
 public abstract class MongoObject<T> {
 
     @SerializedName("_id")
-    private final @Getter T id;
+    protected final @Getter T id;
 
     public MongoObject(T id) {
         this.id = id;
