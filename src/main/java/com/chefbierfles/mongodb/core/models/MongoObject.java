@@ -7,7 +7,6 @@ public abstract class MongoObject<T> {
 
     @SerializedName("_id")
     protected final @Getter T id;
-
     public MongoObject(T id) {
         this.id = id;
     }
