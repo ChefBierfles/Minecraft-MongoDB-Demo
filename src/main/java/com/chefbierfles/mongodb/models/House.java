@@ -1,6 +1,6 @@
 package com.chefbierfles.mongodb.models;
 
-import com.chefbierfles.mongodb.core.annotations.DatabaseEntity;
+import com.chefbierfles.mongodb.core.annotations.DatabaseObject;
 import com.chefbierfles.mongodb.core.models.MongoObject;
 import lombok.Getter;
 
@@ -8,7 +8,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 
-@DatabaseEntity(collectionName = "house", useCache = true, expiryInSecondsAfterAccess = 60)
+@DatabaseObject(collectionName = "house")
 public class House extends MongoObject<UUID> {
 
     private final @Getter String name;
