@@ -5,6 +5,8 @@ import com.google.gson.Gson;
 import com.google.gson.TypeAdapter;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonWriter;
+import lombok.val;
+import org.bson.json.JsonWriterSettings;
 import org.bukkit.Location;
 
 import java.io.IOException;
@@ -25,7 +27,10 @@ public class LocationAdapter extends TypeAdapter<Location> {
 
     @Override
     public void write(JsonWriter jsonWriter, Location location) throws IOException {
-        jsonWriter.value(gson.toJson(location.serialize()));
+        if (location == null)
+            jsonWriter.nullValue();
+        else
+            jsonWriter.value(gson.toJson(location.serialize()));
     }
 }
 
